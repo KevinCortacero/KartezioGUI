@@ -38,9 +38,6 @@ preprocessing_names.insert(0, "None")
 preprocessing_list.insert(0, None)
 endpoint_names = [e.name for e in endpoint_list]
 
-print(fitness_names)
-print(preprocessing_names)
-print(endpoint_names)
 class KartezioSignals(QObject):
     finished = Signal(int)
     error = Signal(tuple)
@@ -149,17 +146,14 @@ class KartezioDesktop(QMainWindow):
     padding: 10px 10px;
     font-size: 16px;
     outline: none;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
 QPushButton:hover {
     background-color: #4db1ff;
-    box-shadow: 0 6px 8px rgba(0, 0, 0, 0.12);
 }
 
 QPushButton:pressed {
     background-color: #2b86d4;
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 
@@ -172,7 +166,7 @@ QPushButton:pressed {
         for item in menu_items:
             btn = QPushButton(item)
             btn.setFlat(True)
-            btn.clicked.connect(functools.partial(self.menu_clicked, item))
+            btn.clicked.connect(functosols.partial(self.menu_clicked, item))
             menu_layout.addWidget(btn)
 
         layout.addLayout(menu_layout)
@@ -193,7 +187,7 @@ QPushButton:pressed {
         layout = QVBoxLayout()
 
         pixmap = QPixmap(200, 200)
-        pixmap.load("simple-no-bg.png")
+        pixmap.load("assets/simple-no-bg.png")
         pixmap = pixmap.scaledToWidth(256)
         logo_label = QLabel()
         logo_label.setPixmap(pixmap)
