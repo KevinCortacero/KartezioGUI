@@ -10,12 +10,13 @@ import sys
 import functools
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QLabel, QHBoxLayout,
                                QFormLayout, QLineEdit, QComboBox, QFrame, QScrollArea, QListWidget, QTextEdit,
-                               QStackedWidget, QSpacerItem, QSizePolicy, QProgressBar, QGroupBox, QStyle)
-from PySide6.QtGui import QColor, QPalette, QPixmap, QFont, QIntValidator, QRegularExpressionValidator
+                               QStackedWidget, QSpacerItem, QSizePolicy, QProgressBar, QGroupBox, QStyle, QGridLayout)
+from PySide6.QtGui import QColor, QPalette, QPixmap, QFont, QIntValidator, QRegularExpressionValidator, QImage, \
+    QGuiApplication
 from PySide6.QtCore import Qt, QObject, Signal, QRunnable, Slot, QThreadPool, QRegularExpression
 
 import skimage.filters.edges
-from kartezio.endpoint import EndpointWatershed, EndpointHoughCircle, EndpointThreshold
+from kartezio.endpoint import EndpointWatershed, EndpointHoughCircle, EndpointThreshold, LocalMaxWatershed
 from kartezio.enums import JSON_ELITE
 from kartezio.fitness import FitnessAP, FitnessIOU
 from kartezio.inference import KartezioModel
@@ -26,17 +27,32 @@ from kartezio.preprocessing import TransformToHSV, TransformToHED, SelectChannel
 import kartezio.utils.json_utils as json
 from numena.io.drive import Directory
 from numena.io.json import json_read, json_write
+import cv2
+
+
+def viridis(image):
+    return cv2.applyColorMap(cv2.convertScaleAbs(image), cv2.COLORMAP_VIRIDIS)
+
+
+def normalize(image):
+    return cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
 
 
 fitness_list = [FitnessIOU(), FitnessAP()]
 preprocessing_list = [TransformToHSV(), TransformToHED()]
-endpoint_list = [EndpointWatershed(), EndpointHoughCircle(), EndpointThreshold(threshold=128)]
+
+endpoint_list = [EndpointWatershed(), LocalMaxWatershed(markers_distance=5), EndpointHoughCircle(),
+                 EndpointHoughCircle(8, 100, 8, 3, 7),
+                 EndpointThreshold(threshold=128)]
 
 fitness_names = [f.name for f in fitness_list]
 preprocessing_names = [p.name for p in preprocessing_list]
-preprocessing_names.insert(0, "None")
+preprocessing_names.insert(0, None)
 preprocessing_list.insert(0, None)
 endpoint_names = [e.name for e in endpoint_list]
+
+preprocessing_map = dict(zip(preprocessing_names, preprocessing_list))
+fitness_map = dict(zip(fitness_names, fitness_list))
 
 class KartezioSignals(QObject):
     finished = Signal(int)
@@ -77,12 +93,19 @@ class KartezioTraining(QRunnable):
             self.signals.finished.emit(self.index)  # Done
 
 
+class CompleteModel:
+    def __init__(self, dataset, model, pp, fitness):
+        self.dataset = dataset
+        self.model = model
+        self.pp = pp
+        self.fitness = fitness
+
 class KartezioDesktop(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Kartezio Desktop App")
         self.setGeometry(100, 100, 720, 480)
-
+        self.loaded_widgets = {}
         self.app_workdir = Directory("./")
         self.app_datasets = self.app_workdir.next(".local").next("datasets")
         self.dataset_map = {}
@@ -92,10 +115,8 @@ class KartezioDesktop(QMainWindow):
         print(self.dataset_map)
 
         self.app_models = self.app_workdir.next(".local").next("models")
-        self.model_map = {}
-        for item in self.app_models.ls("*/*/model.json"):
-            self.model_map[item.parent.name] = KartezioModel(item, fitness=FitnessAP())
-        print(self.model_map)
+
+        self._load_models()
 
         # Apply the Dracula theme
         self.setup_dracula_theme()
@@ -123,8 +144,27 @@ class KartezioDesktop(QMainWindow):
         self.fps = []
         self.index = 0
 
+    def _load_models(self, dataset=None):
+        self.model_map = {}
+        for item in self.app_models.ls("*/*/model.json"):
+            json_data = json_read(item)
+            _dataset = json_data["dataset"]["name"]
+            if _dataset == dataset or dataset is None:
+                if json_data["preprocessing"]:
+                    pp = preprocessing_map[json_data["preprocessing"]["name"]]
+                else:
+                    pp = None
+                fitness = fitness_map[json_data["fitness"]["name"]]
+                model = KartezioModel(item, fitness=fitness)
+                self.model_map[item.parent.name] = CompleteModel(_dataset, model, pp, fitness)
+
     def open_dataset_directory(self):
         os.startfile(self.app_datasets._path)
+
+    def open_model_directory(self):
+        dataset = self.dataset_map[self.combo_dataset.currentText()]
+        complete_path = f"{self.app_models._path}/{dataset}/{self.all_models.currentText()}"
+        os.startfile(complete_path)
 
     def setup_dracula_theme(self):
         self.setStyleSheet("""
@@ -136,39 +176,37 @@ class KartezioDesktop(QMainWindow):
             }
             #GreenProgressBar::chunk {
                 border-radius: 3px;
-                background-color: #63c74d;
+                background-color: #007acc;
             }
            QPushButton {
-    background-color: #34a8eb;
-    color: #f8f8f2;
-    border: none;
-    border-radius: 5px;
-    padding: 10px 10px;
-    font-size: 16px;
-    outline: none;
-}
-
-QPushButton:hover {
-    background-color: #4db1ff;
-}
-
-QPushButton:pressed {
-    background-color: #2b86d4;
-}
-
-
+            background-color: #2d2d30;
+            color: #f8f8f2;
+            border: none;
+            border-radius: 5px;
+            padding: 10px 10px;
+            font-size: 16px;
+            outline: none;
+            }
+            
+            QPushButton:hover {
+                background-color: #3e3e42;
+            }
+            
+            QPushButton:pressed {
+                background-color: #2b86d4;
+            }
         """)
 
     def create_horizontal_menu(self, layout):
         menu_layout = QHBoxLayout()
-        menu_items = ["Home", "Getting Started", "Create a Model", "View my Models", "Run Experiments", "FAQ"]
+        menu_items = ["Home", "Getting Started", "Create a Model", "View my Models"]
+        # menu_items = ["Home", "Getting Started", "Create a Model", "View my Models", "Run Experiments", "FAQ"]
         self.pages = {menu_items[i]: i for i in range(len(menu_items))}
         for item in menu_items:
             btn = QPushButton(item)
             btn.setFlat(True)
-            btn.clicked.connect(functosols.partial(self.menu_clicked, item))
+            btn.clicked.connect(functools.partial(self.menu_clicked, item))
             menu_layout.addWidget(btn)
-
         layout.addLayout(menu_layout)
 
     def menu_clicked(self, item):
@@ -177,10 +215,11 @@ QPushButton:pressed {
 
     def create_pages(self):
         self.stacked_widget.addWidget(self.display_home())
-        self.stacked_widget.addWidget(self.display_model_cards())
+        self.stacked_widget.addWidget(self.display_tuto())
         self.stacked_widget.addWidget(self.display_training())
-        self.stacked_widget.addWidget(self.display_inference())
-        self.stacked_widget.addWidget(self.display_datasets())
+        self.stacked_widget.addWidget(self.display_model_cards())
+        # self.stacked_widget.addWidget(self.display_inference())
+        # self.stacked_widget.addWidget(self.display_datasets())
 
     def display_home(self):
         widget = QWidget()
@@ -208,30 +247,97 @@ QPushButton:pressed {
         widget.setLayout(layout)
         return widget
 
+    def display_tuto(self):
+        widget = QWidget()
+        return widget
+
+    def on_combobox_changed(self, value):
+        self._load_models(value)
+        self.all_models.clear()
+        self.all_models.addItems(self.model_map)
+
+    def on_model_changed(self, value):
+        complete_name = f"{self.combo_dataset.currentText()}/{value}"
+        if complete_name not in self.loaded_widgets.keys():
+            card = self.create_model_card(value, self.model_map[value])
+            self.stacked_models.addWidget(card)
+            self.loaded_widgets[complete_name] = len(self.loaded_widgets)
+        self.stacked_models.setCurrentIndex(self.loaded_widgets[complete_name])
+
+
     def display_model_cards(self):
         widget = QWidget()
         layout = QVBoxLayout()
+        self.combo_dataset = QComboBox()
+        self.combo_dataset.addItems(self.dataset_map)
+        self.combo_dataset.currentTextChanged.connect(self.on_combobox_changed)
+        layout.addWidget(self.combo_dataset)
 
-        for i in range(3):
-            card = self.create_model_card(f"Model {i + 1}", "Placeholder image here.")
-            layout.addWidget(card)
+        self.all_models = QComboBox()
+        self.on_combobox_changed(self.combo_dataset.currentText())
+        self.all_models.currentTextChanged.connect(self.on_model_changed)
+        layout.addWidget(self.all_models)
+
+        # Content Area - Using a Stacked Widget
+        self.stacked_models = QStackedWidget()
+        layout.addWidget(self.stacked_models)
+        self.on_model_changed(self.all_models.currentText())
+        """
+        group = QGroupBox()
+        self.models_done_group = QGridLayout()
+        group.setLayout(self.models_done_group)
+        models = QScrollArea()
+        models.setWidget(group)
+        models.setWidgetResizable(True)
+        layout.addWidget(models)
+        widget.setLayout(layout)
+        for model_name, model in self.model_map.items():
+            card = self.create_model_card(model_name, model)
+            self.models_done_group.addWidget(card)
+        """
 
         widget.setLayout(layout)
         return widget
 
-    def create_model_card(self, title, description):
+    def create_model_card(self, title, model):
         card = QFrame()
         layout = QVBoxLayout()
-
+        model_infos = QHBoxLayout()
         label_title = QLabel(title)
         font = label_title.font()
-        font.setPointSize(14)
+        font.setPointSize(12)
         label_title.setFont(font)
-
-        label_description = QLabel(description)
-
-        layout.addWidget(label_title)
-        layout.addWidget(label_description)
+        model_infos.addWidget(label_title)
+        open_button = QPushButton("Open")
+        open_button.setMaximumWidth(64)
+        open_button.setMaximumWidth(64)
+        open_button.clicked.connect(self.open_model_directory)
+        model_infos.addWidget(open_button)
+        layout.addLayout(model_infos)
+        grid_layout = QGridLayout()
+        dataset = read_dataset(self.dataset_map[model.dataset])
+        p, _ = model.model.predict(dataset.train_x)
+        predictions = []
+        target_path = f"{self.app_models._path}/{self.dataset_map[model.dataset].name}/{title}"
+        print(target_path)
+        for i, pi in enumerate(p):
+            filename = f"{target_path}/image_{i}.png"
+            print(filename)
+            if "labels" in pi.keys():
+                cv2.imwrite(filename, pi["labels"])
+                predictions.append(viridis(normalize(pi["labels"])))
+            else:
+                cv2.imwrite(filename, pi["mask"])
+                predictions.append(viridis(normalize(pi["mask"])))
+        for i, pi in enumerate(predictions):
+            height, width, channel = pi.shape
+            bytesPerLine = 3 * width
+            image = QImage(pi.data, width, height, bytesPerLine, QImage.Format_RGB888).rgbSwapped().scaledToWidth(224)
+            lbl = QLabel()
+            pixmap = QPixmap(image)
+            lbl.setPixmap(pixmap)
+            grid_layout.addWidget(lbl, i // 4, i % 4)
+        layout.addLayout(grid_layout)
         card.setLayout(layout)
         return card
 
@@ -264,7 +370,6 @@ QPushButton:pressed {
         self.dataset.addItems(self.dataset_map)
         datasets_infos.addWidget(self.dataset)
         dataset_link_btn = QPushButton("Open Location")
-        dataset_link_btn.setFlat(True)
         dataset_link_btn.clicked.connect(self.open_dataset_directory)
         datasets_infos.addWidget(dataset_link_btn)
 
@@ -355,7 +460,7 @@ QPushButton:pressed {
         model_param_layout.addWidget(QLabel("TODO"))
         model_param_layout.addWidget(QLabel("Endpoint"))
         model_param_layout.addWidget(QLabel("TODO"))
-        layout.addLayout(model_param_layout)
+        # layout.addLayout(model_param_layout)
         card.setLayout(layout)
         return card
     def train_model(self):
