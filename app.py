@@ -2,9 +2,10 @@ import os
 import time
 import traceback
 
+import pandas as pd
 from kartezio.apps.segmentation import create_segmentation_model
 from kartezio.callback import CallbackSave, Event
-from kartezio.dataset import read_dataset
+from kartezio.dataset import read_dataset, DatasetMeta
 
 import sys
 import functools
@@ -38,7 +39,7 @@ def normalize(image):
     return cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
 
 
-fitness_list = [FitnessIOU(), FitnessAP()]
+fitness_list = [FitnessIOU(), FitnessAP(), FitnessAP(thresholds=0.7), FitnessAP(thresholds=0.9)]
 preprocessing_list = [TransformToHSV(), TransformToHED()]
 
 endpoint_list = [EndpointWatershed(), LocalMaxWatershed(markers_distance=5), EndpointHoughCircle(),
@@ -162,8 +163,8 @@ class KartezioDesktop(QMainWindow):
         os.startfile(self.app_datasets._path)
 
     def open_model_directory(self):
-        dataset = self.dataset_map[self.combo_dataset.currentText()]
-        complete_path = f"{self.app_models._path}/{dataset}/{self.all_models.currentText()}"
+        dataset = self.dataset_map[self.combo_dataset.currentText()].name
+        complete_path = f"{self.app_models._path}\\{dataset}\\{self.all_models.currentText()}"
         os.startfile(complete_path)
 
     def setup_dracula_theme(self):
@@ -248,8 +249,90 @@ class KartezioDesktop(QMainWindow):
         return widget
 
     def display_tuto(self):
+        font = QFont()
+        font.setBold(True)
+
         widget = QWidget()
+        layout = QFormLayout()
+        desc_1 = QLabel("Description:")
+        desc_1.setFont(font)
+        layout.addRow(desc_1, QLabel("Kartezio is an evolutionary designer of customized and fully transparent image processing models, which can help automate cumbersome image processing tasks and facilitate further analysis.\nThe models are evolved by Kartezio over a certain number of generations and are composed of a series of simple, discrete functions that are understandable by humans."))
+
+        desc_2 = QLabel("Model name:")
+        desc_2.setFont(font)
+        layout.addRow(desc_2, QLabel("This provides a unique descriptive identifier for your model"))
+
+        desc_3 = QLabel("Iterations:")
+        desc_3.setFont(font)
+        layout.addRow(desc_3, QLabel("This is the number of generations over which Kartezio will evolve your model.\nIn general, the higher the number of iterations, the better the performance of your model will be.\nTypical range is from 200 to 20,000 iterations"))
+
+        desc_4 = QLabel("Max functions:")
+        desc_4.setFont(font)
+        layout.addRow(desc_4, QLabel(
+            "the maximum number of functions indicates the complexity of the model.\nThe more functions, the more accurate the model may be but the more iterations may be required in order to achieve a satisfactory performance.\nDefault is 20 functions."))
+
+        desc_5 = QLabel("Preprocessing:")
+        desc_5.setFont(font)
+        layout.addRow(desc_5, QLabel(
+            "For immunohistochemistry (IHC) images, preprocessing may be helpful to split the image into easily interpretable channels.\nExamples of preprocessing including HED (Hematoxylin – Eosin – DAB) or HSV (Hue – Saturation – Value) transformations."))
+
+        desc_6 = QLabel("Endpoint:")
+        desc_6.setFont(font)
+        layout.addRow(desc_6, QLabel(
+            "Choosing the correct endpoint is necessary to tell the algorithm what task you wish to accomplish. A list of common tasks and their matched endpoints is provided below:"))
+
+        layout.addRow("", QLabel("a) Segmentation of round-shaped cells, granules or organelles: Hough Circle Transform endpoint"))
+        layout.addRow("", QLabel("b) Segmentation of irregularly shaped cells with a nuclear dye: Marker Controlled Watershed"))
+        layout.addRow("", QLabel("c) Segmentation of irregularly shaped cells or organelles: Local-Max Watershed"))
+        layout.addRow("", QLabel("d) Identification of tumor area: Threshold"))
+
+        desc_7 = QLabel("Fitness:")
+        desc_7.setFont(font)
+        layout.addRow(desc_7, QLabel("Performance of your model is measured using a fitness score, which indicates how well the predictions of your model fit the ground-truth.\nSeveral types of fitness scores may be used:"))
+
+        layout.addRow("", QLabel(
+            "a) Instance segmentation: utilize AP50 or AP70 (AP70 is a more stringent fitness metric)."))
+        layout.addRow("", QLabel(
+            "b) Semantic segmentation: utilize IoU."))
+
+        parameters = QHBoxLayout()
+        desc_1 = QLabel("Dataset:")
+        desc_1.setFont(font)
+
+        self.new_dataset = QLineEdit(self)
+        regex = QRegularExpression(r"^^[a-zA-Z_]{1,32}$")
+        validator = QRegularExpressionValidator(regex, self.new_dataset)
+        self.new_dataset.setValidator(validator)
+        parameters.addWidget(self.new_dataset)
+        create_dataset_button = QPushButton("Create")
+        create_dataset_button.clicked.connect(self.create_dataset)
+        parameters.addWidget(create_dataset_button)
+        layout.addRow(desc_1, parameters)
+
+        widget.setLayout(layout)
         return widget
+
+    def create_dataset(self):
+        name = self.new_dataset.text()
+        dataset_directory = self.app_datasets.next(name)
+        dataset_directory.next("training").next("train_x")
+        dataset_directory.next("training").next("train_y")
+        dataset_directory.next("test").next("test_x")
+        dataset_directory.next("test").next("test_y")
+        os.startfile(dataset_directory._path)
+        DatasetMeta.write(
+            str(dataset_directory._path),
+            name,
+            "image",
+            "channels",
+            "roi",
+            "polygon",
+           "object_name",
+        )
+        df = pd.DataFrame({'input': ['training/train_x/image_0.png', 'test/test_x/image_0.png'],
+                           'label': ['training/train_y/image_0.zip', 'test/test_y/image_0.zip'],
+                           'set': ['training', 'testing']})
+        df.to_csv(str(dataset_directory._path) + "\\dataset.csv", index=False, sep=",")
 
     def on_combobox_changed(self, value):
         self._load_models(value)
@@ -276,12 +359,12 @@ class KartezioDesktop(QMainWindow):
         self.all_models = QComboBox()
         self.on_combobox_changed(self.combo_dataset.currentText())
         self.all_models.currentTextChanged.connect(self.on_model_changed)
+        self.all_models.setCurrentIndex(0)
         layout.addWidget(self.all_models)
 
         # Content Area - Using a Stacked Widget
         self.stacked_models = QStackedWidget()
         layout.addWidget(self.stacked_models)
-        self.on_model_changed(self.all_models.currentText())
         """
         group = QGroupBox()
         self.models_done_group = QGridLayout()
@@ -322,7 +405,6 @@ class KartezioDesktop(QMainWindow):
         print(target_path)
         for i, pi in enumerate(p):
             filename = f"{target_path}/image_{i}.png"
-            print(filename)
             if "labels" in pi.keys():
                 cv2.imwrite(filename, pi["labels"])
                 predictions.append(viridis(normalize(pi["labels"])))
